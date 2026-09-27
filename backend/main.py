@@ -45,6 +45,16 @@
                           界，目标有界且整个区间落入合格区间才计通过；组合概率
                           精确求和，以既约分数返回通过/未通过概率；不为每种组合
                           重跑全点最短路）
+  POST /api/extreme-scenario 极值共现工况（沿用现有点和测量校验；按顺序接收
+                          1～10 个目标，每项为两个不同基准点构成的有序间隙及
+                          最紧下界/上界界别，同一有序点对、同一界别不得重复；
+                          原清单矛盾时只返回负环；目标界无界时报明目标序号、
+                          不生成工况；否则对完整清单求各目标的最紧整数界，把
+                          达到该界作为等式条件，求能由同一组坐标同时达到的
+                          目标数最多的子集，并列时取输入序号列表字典序最小者；
+                          返回各目标界值、入选与未入选目标，以及满足原测量和
+                          入选等式的一组整数坐标，每个原始连通分量以最早录入
+                          的基准点为零点）
 静态：GET /         前端页面（static/index.html）
 """
 
@@ -742,6 +752,38 @@ async def qualification_reliability(request: Request):
         points, constraints,
         model.target_from.strip(), model.target_to.strip(),
         model.target_low, model.target_high, items)
+
+
+@app.post("/api/extreme-scenario")
+async def extreme_scenario(request: Request):
+    try:
+        raw = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"detail": ["请求体不是合法的 JSON"]})
+    if not isinstance(raw, dict):
+        return JSONResponse(status_code=400, content={"detail": ["请求体必须是 JSON 对象"]})
+    try:
+        points, constraints = _prepare(raw)
+    except ValidationError as exc:
+        return JSONResponse(status_code=400,
+                            content={"detail": _validation_messages(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": list(exc.args[0])})
+    try:
+        targets = solver.validate_extreme_targets(points, raw.get("targets"))
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": list(exc.args[0])})
+
+    edges = solver.build_edges(points, constraints)
+    cycle = solver.find_negative_cycle(len(points), edges)
+    if cycle is not None:
+        # 原清单矛盾：只返回现有负环，不生成工况
+        return {
+            "consistent": False,
+            "points": points,
+            "contradiction": solver.contradiction_payload(points, edges, cycle),
+        }
+    return solver.extreme_scenario(points, constraints, targets)
 
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"

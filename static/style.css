@@ -526,6 +526,10 @@ body {
 .rel-pct.fail { color: var(--fail); }
 .rel-pct.pass { color: var(--pass); }
 
+/* 极值共现工况 */
+.ext-result { margin-top: 14px; }
+.ext-table { max-height: 320px; }
+
 @media (max-width: 960px) {
   .layout { grid-template-columns: 1fr; }
 }

@@ -192,6 +192,21 @@ const EXAMPLES = {
     },
     query: null,
     autoReliability: true
+  },
+  "15": {
+    name: "极值共现工况（极值冲突）",
+    points: ["A", "B", "C"],
+    constraints: [
+      { id: "M01", from: "A", to: "B", low: 10, high: 20 },
+      { id: "M02", from: "B", to: "C", low: 10, high: 20 }
+    ],
+    extremeTargets: [
+      { from: "A", to: "C", side: "upper" },
+      { from: "A", to: "B", side: "lower" },
+      { from: "B", to: "C", side: "lower" }
+    ],
+    query: null,
+    autoExtreme: true
   }
 };
 
@@ -226,6 +241,8 @@ let state = {
   relSelected: {},         // 缺失合格概率：测量编号 -> true（可能缺失的测量，至多 12 条）
   relMissing: {},          // 缺失合格概率：测量编号 -> 缺失概率字符串（0～1000‰）
   reliability: null,       // 最近一次缺失合格概率结果（点、测量、目标或缺失率变化后置空失效）
+  extremeTargets: [],      // 极值共现工况：有序目标列表（1～10 项）{from, to, side:"lower"|"upper"}
+  extreme: null,           // 最近一次极值共现工况结果（点、测量或目标变化后置空失效）
   query: { from: "", to: "", targetLow: "", targetHigh: "" },
   readingWindow: { from: "", to: "", targetFrom: "", targetTo: "", targetLow: "", targetHigh: "" },
   shimPlan: { targetFrom: "", targetTo: "", targetLow: "", targetHigh: "" },
@@ -268,7 +285,8 @@ function persist() {
       attrTarget: state.attrTarget,
       relSelected: state.relSelected,
       relMissing: state.relMissing,
-      relTarget: state.relTarget
+      relTarget: state.relTarget,
+      extremeTargets: state.extremeTargets
     }));
   } catch (e) { /* 忽略存储异常 */ }
 }
@@ -284,6 +302,7 @@ function markDirty() {
   state.inspection = null; // 测量变化后旧复核排程结果失效
   state.attribution = null; // 点/测量变化后旧精度归因结果失效
   state.reliability = null; // 点/测量变化后旧缺失合格概率结果失效
+  state.extreme = null;     // 点/测量变化后旧极值共现工况失效
   const ids = new Set(state.constraints.map((c) => c.id));
   for (const id of Object.keys(state.steps)) {
     if (!ids.has(id)) delete state.steps[id];   // 清理已删除约束的步长
@@ -331,6 +350,10 @@ function markDirty() {
       state.relTarget[key] = "";   // 清理缺测目标下拉中已删除的点名
     }
   }
+  for (const g of state.extremeTargets) {
+    if (g.from && !pset.has(g.from)) g.from = "";   // 清理目标中已删除的点名
+    if (g.to && !pset.has(g.to)) g.to = "";
+  }
   persist();
   renderResults();
   renderSimplify();
@@ -343,6 +366,7 @@ function markDirty() {
   renderInspection();
   renderAttribution();
   renderReliability();
+  renderExtreme();
 }
 async function postJSON(url, body) {
   const resp = await fetch(url, {
@@ -462,6 +486,15 @@ function showRelError(msg) {
     : esc(msg);
 }
 function clearRelMessage() { $("relMessage").hidden = true; }
+function showExtError(msg) {
+  const box = $("extMessage");
+  box.hidden = false;
+  box.className = "message error";
+  box.innerHTML = Array.isArray(msg)
+    ? "<ul>" + msg.map((m) => `<li>${esc(m)}</li>`).join("") + "</ul>"
+    : esc(msg);
+}
+function clearExtMessage() { $("extMessage").hidden = true; }
 
 /* ---------------- 渲染：基准点 ---------------- */
 function renderPoints() {
@@ -550,6 +583,7 @@ function renderAll() {
   renderInspection();
   renderAttribution();
   renderReliability();
+  renderExtreme();
 }
 
 /* ---------------- 结果区 ---------------- */
@@ -2198,6 +2232,179 @@ async function runReliability() {
   renderReliabilityResult();
 }
 
+/* ---------------- 极值共现工况 ---------------- */
+const EXT_SIDE_TEXT = { lower: "最紧下界", upper: "最紧上界" };
+
+function renderExtremeTargets() {
+  const wrap = $("extTargetsWrap");
+  $("extCounter").textContent = `${state.extremeTargets.length} / 10 目标`;
+  $("extEmpty").style.display = state.extremeTargets.length ? "none" : "block";
+  $("addExtTargetBtn").disabled = state.extremeTargets.length >= 10;
+  const seen = new Set();
+  wrap.innerHTML = state.extremeTargets.map((g, i) => {
+    const fromOpts = state.points.map((p) =>
+      `<option value="${esc(p)}"${p === g.from ? " selected" : ""}>${esc(p)}</option>`).join("");
+    const toOpts = state.points.map((p) =>
+      `<option value="${esc(p)}"${p === g.to ? " selected" : ""}>${esc(p)}</option>`).join("");
+    const key = JSON.stringify([g.from, g.to, g.side]);
+    const dup = g.from && g.to && seen.has(key);
+    seen.add(key);
+    const samePt = g.from && g.to && g.from === g.to;
+    return `<div class="position-card">
+      <div class="position-head">
+        <span class="pos-title">目标 ${i + 1}</span>
+        <label class="pos-field">起点
+          <select class="input dir-select" data-ext-field="from" data-ext="${i}">${fromOpts}</select>
+        </label>
+        <label class="pos-field">终点
+          <select class="input dir-select" data-ext-field="to" data-ext="${i}">${toOpts}</select>
+        </label>
+        <label class="pos-field">界别
+          <select class="input dir-select" data-ext-field="side" data-ext="${i}">
+            <option value="lower"${g.side === "lower" ? " selected" : ""}>最紧下界</option>
+            <option value="upper"${g.side === "upper" ? " selected" : ""}>最紧上界</option>
+          </select>
+        </label>
+        ${samePt ? '<span class="tag unb">两点相同</span>' : ""}
+        ${dup ? '<span class="tag unb">重复</span>' : ""}
+        <span class="spacer"></span>
+        <button class="btn tiny danger" data-ext-del="${i}">删除</button>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+function invalidateExtreme() {
+  state.extreme = null;
+  clearExtMessage();
+  renderExtremeResult();
+  persist();
+}
+
+function renderExtremeResult() {
+  const box = $("extResult");
+  const r = state.extreme;
+  if (!r) { box.innerHTML = ""; return; }
+  if (!r.consistent) {
+    // 原清单矛盾：只显示现有负环，不生成工况
+    box.innerHTML = renderContradiction(r.contradiction);
+    return;
+  }
+  const sideText = (s) => EXT_SIDE_TEXT[s] || s;
+  if (r.bounded === false) {
+    const rows = r.targets.map((t) => `<tr>
+      <td class="num">${t.index}</td>
+      <td>${esc(t.from)} → ${esc(t.to)}</td>
+      <td>${esc(sideText(t.side))}</td>
+      <td class="num">${t.bound === null ? '<span class="tag unb">无界</span>' : `${t.bound} μm`}</td>
+    </tr>`).join("");
+    box.innerHTML = `
+      <div class="verdict-banner fail"><span class="icon">∞</span>
+        <div>目标界无界：第 ${r.unboundedIndices.join("、")} 个目标，不生成工况
+        <span class="sub">上述目标的两个基准点在原测量图中不连通，对应界别推不出有限界值；按规则只报明目标序号，不生成工况。</span></div>
+      </div>
+      <div class="table-wrap ext-table">
+        <table class="data-table">
+          <thead><tr><th>目标</th><th>有序间隙</th><th>界别</th><th>最紧界值</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+    return;
+  }
+  const selSet = new Set(r.selectedIndices);
+  const rows = r.targets.map((t) => {
+    const on = selSet.has(t.index);
+    return `<tr>
+      <td class="num">${t.index}</td>
+      <td>${esc(t.from)} → ${esc(t.to)}</td>
+      <td>${esc(sideText(t.side))}</td>
+      <td class="num"><b>${t.bound}</b> μm</td>
+      <td>${on ? '<span class="tag bnd">入选</span>' : '<span class="tag lock">未入选</span>'}</td>
+    </tr>`;
+  }).join("");
+  const coordRows = r.coordinates.map((c) => `<tr>
+      <td>${esc(c.point)}${c.point === c.zeroPoint ? ' <span class="tag anchor">零点</span>' : ""}</td>
+      <td class="num"><b>${c.value}</b></td>
+      <td>${esc(c.zeroPoint)}</td>
+    </tr>`).join("");
+  const total = r.targets.length;
+  const allIn = r.selectedCount === total;
+  box.innerHTML = `
+    <div class="verdict-banner ${allIn ? "pass" : "info"}"><span class="icon">${allIn ? "✓" : "★"}</span>
+      <div>${allIn
+        ? `全部 ${total} 个目标的极值可同时达到`
+        : `极值共现工况：${total} 个目标中最多 ${r.selectedCount} 个可同时达到极值`}
+      <span class="sub">把各目标的最紧界作为等式条件叠加到原测量上；入选子集目标数最多，并列时取输入序号列表字典序最小者。下列整数坐标同时满足全部原测量与入选等式，每个原始连通分量以最早录入的基准点为零点。</span></div>
+    </div>
+    <dl class="kv">
+      <dt>入选目标（同时达到极值）</dt><dd>${r.selectedIndices.length ? r.selectedIndices.join("、") : "—"}（共 ${r.selectedCount} 个）</dd>
+      <dt>未入选目标</dt><dd>${r.excludedIndices.length ? r.excludedIndices.join("、") : "—"}</dd>
+    </dl>
+    <div class="table-wrap ext-table">
+      <table class="data-table">
+        <thead><tr><th>目标</th><th>有序间隙</th><th>界别</th><th>最紧界值</th><th>是否入选</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <p class="tol-title">工况坐标（满足原测量与入选等式，整数 μm）</p>
+    <div class="table-wrap ext-table">
+      <table class="data-table">
+        <thead><tr><th>基准点</th><th>坐标 μm</th><th>分量零点</th></tr></thead>
+        <tbody>${coordRows}</tbody>
+      </table>
+    </div>`;
+}
+
+function renderExtreme() {
+  renderExtremeTargets();
+  renderExtremeResult();
+}
+
+async function runExtreme() {
+  clearExtMessage();
+  if (state.points.length < 2) return showExtError("请先录入至少 2 个基准点。");
+  if (state.constraints.length < 1) return showExtError("请至少录入 1 条测量约束。");
+  const errors = [];
+  const targets = state.extremeTargets;
+  if (!targets.length) errors.push("请至少录入 1 个目标。");
+  if (targets.length > 10) errors.push("目标至多 10 个。");
+  const seen = new Set();
+  targets.forEach((g, i) => {
+    const label = `目标 ${i + 1}`;
+    if (!g.from) errors.push(`${label}：请选择起点。`);
+    if (!g.to) errors.push(`${label}：请选择终点。`);
+    if (g.from && g.to && g.from === g.to) errors.push(`${label}：起点与终点必须不同。`);
+    if (g.side !== "lower" && g.side !== "upper") errors.push(`${label}：请选择界别。`);
+    const key = JSON.stringify([g.from, g.to, g.side]);
+    if (g.from && g.to && seen.has(key)) {
+      errors.push(`${label}：与之前目标重复（同一有序点对、同一界别不得重复）。`);
+    }
+    seen.add(key);
+  });
+  if (errors.length) return showExtError(errors);
+
+  const btn = $("extBtn");
+  btn.disabled = true;
+  btn.textContent = "计算中…";
+  const { ok, data } = await postJSON("/api/extreme-scenario", {
+    points: state.points,
+    constraints: state.constraints,
+    targets: targets.map((g) => ({ from: g.from, to: g.to, side: g.side }))
+  });
+  btn.disabled = false;
+  btn.textContent = "计算极值共现工况";
+  if (!ok) {
+    state.extreme = null;
+    renderExtremeResult();
+    return showExtError(data && data.detail ? data.detail : "极值共现工况请求失败。");
+  }
+  state.extreme = data;
+  if (data.consistent) state.analysis = { consistent: true, points: state.points };
+  else state.analysis = data;   // 矛盾：同步展示现有负环
+  renderResults();
+  renderExtremeResult();
+}
+
 /* ---------------- 示例 ---------------- */
 async function loadExample(key) {
   const ex = EXAMPLES[key];
@@ -2225,6 +2432,10 @@ async function loadExample(key) {
   state.inspection = null;
   state.attribution = null;
   state.reliability = null;
+  state.extreme = null;
+  state.extremeTargets = ex.extremeTargets
+    ? ex.extremeTargets.map((g) => ({ from: g.from, to: g.to, side: g.side }))
+    : [];
   state.attrSelected = {};
   state.attrTarget = { targetFrom: "", targetTo: "" };
   state.relSelected = {};
@@ -2276,6 +2487,7 @@ async function loadExample(key) {
   renderInspection();
   renderAttribution();
   renderReliability();
+  renderExtreme();
   clearSimplifyMessage();
   clearToleranceMessage();
   clearFitMessage();
@@ -2284,6 +2496,7 @@ async function loadExample(key) {
   clearInspMessage();
   clearAttrMessage();
   clearRelMessage();
+  clearExtMessage();
   resetConstraintForm();
   if (ex.query) {
     state.query = { ...ex.query };
@@ -2352,6 +2565,9 @@ async function loadExample(key) {
     $("rTargetTo").value = ex.reliability.targetTo;
     await runReliability();
   }
+  if (ex.autoExtreme) {
+    await runExtreme();
+  }
 }
 
 /* ---------------- 初始化 ---------------- */
@@ -2401,6 +2617,16 @@ function init() {
         targetLow: saved.relTarget.targetLow || "",
         targetHigh: saved.relTarget.targetHigh || ""
       };
+    }
+    if (Array.isArray(saved.extremeTargets)) {
+      state.extremeTargets = saved.extremeTargets
+        .filter((g) => g && typeof g === "object")
+        .slice(0, 10)
+        .map((g) => ({
+          from: typeof g.from === "string" ? g.from : "",
+          to: typeof g.to === "string" ? g.to : "",
+          side: g.side === "lower" ? "lower" : "upper"
+        }));
     }
     if (Array.isArray(saved.positions)) {
       state.positions = saved.positions
@@ -2464,6 +2690,33 @@ function init() {
   $("inspBtn").addEventListener("click", runInspection);
   $("attrBtn").addEventListener("click", runAttribution);
   $("relBtn").addEventListener("click", runReliability);
+  $("extBtn").addEventListener("click", runExtreme);
+  $("addExtTargetBtn").addEventListener("click", () => {
+    if (state.extremeTargets.length >= 10) return;
+    state.extremeTargets.push({
+      from: state.points[0] || "",
+      to: state.points[1] || state.points[0] || "",
+      side: "upper"
+    });
+    invalidateExtreme();
+    renderExtremeTargets();
+  });
+  $("extTargetsWrap").addEventListener("click", (e) => {
+    const del = e.target.closest("button[data-ext-del]");
+    if (!del) return;
+    state.extremeTargets.splice(Number(del.dataset.extDel), 1);
+    invalidateExtreme();
+    renderExtremeTargets();
+  });
+  $("extTargetsWrap").addEventListener("change", (e) => {
+    const sel = e.target.closest("select[data-ext-field]");
+    if (!sel) return;
+    const i = Number(sel.dataset.ext);
+    state.extremeTargets[i][sel.dataset.extField] = sel.value;
+    // 目标变化后旧工况立即清除（重渲染以刷新重复/同点标记）
+    invalidateExtreme();
+    renderExtremeTargets();
+  });
   $("attrTbody").addEventListener("click", (e) => {
     const btn = e.target.closest("button[data-attr-toggle]");
     if (!btn) return;
