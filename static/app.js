@@ -192,6 +192,22 @@ const EXAMPLES = {
     },
     query: null,
     autoReliability: true
+  },
+  "15": {
+    name: "极值共现工况",
+    points: ["A", "B", "C"],
+    constraints: [
+      { id: "M01", from: "A", to: "B", low: 0, high: 10 },
+      { id: "M02", from: "B", to: "C", low: 0, high: 10 },
+      { id: "M03", from: "A", to: "C", low: 5, high: 15 }
+    ],
+    extremeTargets: [
+      { from: "A", to: "B", bound: "upper" },
+      { from: "B", to: "C", bound: "upper" },
+      { from: "A", to: "C", bound: "upper" }
+    ],
+    query: null,
+    autoExtreme: true
   }
 };
 
@@ -226,6 +242,8 @@ let state = {
   relSelected: {},         // 缺失合格概率：测量编号 -> true（可能缺失的测量，至多 12 条）
   relMissing: {},          // 缺失合格概率：测量编号 -> 缺失概率字符串（0～1000‰）
   reliability: null,       // 最近一次缺失合格概率结果（点、测量、目标或缺失率变化后置空失效）
+  extremeTargets: [],      // 极值共现工况目标（有序，1～10 个）：{from, to, bound: "lower"|"upper"}
+  extreme: null,           // 最近一次极值共现工况结果（点、测量或目标录入变化后置空失效）
   query: { from: "", to: "", targetLow: "", targetHigh: "" },
   readingWindow: { from: "", to: "", targetFrom: "", targetTo: "", targetLow: "", targetHigh: "" },
   shimPlan: { targetFrom: "", targetTo: "", targetLow: "", targetHigh: "" },
@@ -268,7 +286,8 @@ function persist() {
       attrTarget: state.attrTarget,
       relSelected: state.relSelected,
       relMissing: state.relMissing,
-      relTarget: state.relTarget
+      relTarget: state.relTarget,
+      extremeTargets: state.extremeTargets
     }));
   } catch (e) { /* 忽略存储异常 */ }
 }
@@ -284,6 +303,7 @@ function markDirty() {
   state.inspection = null; // 测量变化后旧复核排程结果失效
   state.attribution = null; // 点/测量变化后旧精度归因结果失效
   state.reliability = null; // 点/测量变化后旧缺失合格概率结果失效
+  state.extreme = null;     // 点/测量变化后旧极值共现工况失效
   const ids = new Set(state.constraints.map((c) => c.id));
   for (const id of Object.keys(state.steps)) {
     if (!ids.has(id)) delete state.steps[id];   // 清理已删除约束的步长
@@ -331,6 +351,11 @@ function markDirty() {
       state.relTarget[key] = "";   // 清理缺测目标下拉中已删除的点名
     }
   }
+  // 清理极值目标中引用已删除基准点的录入行
+  if (Array.isArray(state.extremeTargets)) {
+    state.extremeTargets = state.extremeTargets.filter(
+      (t) => t && pset.has(t.from) && pset.has(t.to));
+  }
   persist();
   renderResults();
   renderSimplify();
@@ -343,6 +368,7 @@ function markDirty() {
   renderInspection();
   renderAttribution();
   renderReliability();
+  renderExtreme();
 }
 async function postJSON(url, body) {
   const resp = await fetch(url, {
@@ -462,6 +488,15 @@ function showRelError(msg) {
     : esc(msg);
 }
 function clearRelMessage() { $("relMessage").hidden = true; }
+function showExtremeError(msg) {
+  const box = $("extremeMessage");
+  box.hidden = false;
+  box.className = "message error";
+  box.innerHTML = Array.isArray(msg)
+    ? "<ul>" + msg.map((m) => `<li>${esc(m)}</li>`).join("") + "</ul>"
+    : esc(msg);
+}
+function clearExtremeMessage() { $("extremeMessage").hidden = true; }
 
 /* ---------------- 渲染：基准点 ---------------- */
 function renderPoints() {
@@ -550,6 +585,7 @@ function renderAll() {
   renderInspection();
   renderAttribution();
   renderReliability();
+  renderExtreme();
 }
 
 /* ---------------- 结果区 ---------------- */
@@ -2198,6 +2234,196 @@ async function runReliability() {
   renderReliabilityResult();
 }
 
+/* ---------------- 极值共现工况 ---------------- */
+function defaultExtremeTarget() {
+  const from = state.points[0] || "";
+  const to = state.points[1] || state.points[0] || "";
+  return { from, to, bound: "upper" };
+}
+
+function extremeDupKey(t) {
+  return `${t.from} ${t.to} ${t.bound}`;
+}
+
+function renderExtremeTable() {
+  const tbody = $("extremeTbody");
+  $("extremeCounter").textContent = `${state.extremeTargets.length} / 10 个目标`;
+  $("addExtremeBtn").disabled = state.extremeTargets.length >= 10;
+  $("extremeEmpty").style.display = state.extremeTargets.length ? "none" : "block";
+  $("extremeTable").style.display = state.extremeTargets.length ? "" : "none";
+  const seen = new Map();
+  state.extremeTargets.forEach((t, i) => {
+    const key = extremeDupKey(t);
+    if (!seen.has(key)) seen.set(key, i);
+  });
+  const optionRows = (sel) => state.points.map((p) =>
+    `<option value="${esc(p)}"${p === sel ? " selected" : ""}>${esc(p)}</option>`).join("");
+  tbody.innerHTML = state.extremeTargets.map((t, i) => {
+    const samePoint = !!t.from && t.from === t.to;
+    const dup = seen.get(extremeDupKey(t)) !== i;
+    const bad = samePoint || dup;
+    return `<tr${bad ? ' class="editing"' : ""}>
+      <td><span class="opt-pick">${i + 1}</span></td>
+      <td><select class="input extreme-select${bad ? " bad" : ""}" data-ext-field="from" data-ext="${i}">
+        ${optionRows(t.from)}</select></td>
+      <td><select class="input extreme-select${bad ? " bad" : ""}" data-ext-field="to" data-ext="${i}">
+        ${optionRows(t.to)}</select></td>
+      <td><select class="input extreme-select" data-ext-field="bound" data-ext="${i}">
+        <option value="upper"${t.bound === "upper" ? " selected" : ""}>最紧上界 U</option>
+        <option value="lower"${t.bound === "lower" ? " selected" : ""}>最紧下界 L</option>
+      </select>${dup ? ' <span class="tag unb">重复</span>' : samePoint ? ' <span class="tag unb">同点</span>' : ""}</td>
+      <td><button class="btn tiny danger" data-ext-del="${i}">删除</button></td>
+    </tr>`;
+  }).join("");
+}
+
+function renderExtremeResult() {
+  const box = $("extremeResult");
+  const r = state.extreme;
+  if (!r) { box.innerHTML = ""; return; }
+
+  if (!r.consistent) {
+    box.innerHTML = renderContradiction(r.contradiction);
+    return;
+  }
+  const sc = r.scenario;
+  const selectedSet = new Set(sc.selectedIndices);
+  const targetRows = r.targets.map((t) => {
+    const sel = selectedSet.has(t.index);
+    return `<tr${sel ? ' class="chosen"' : ""}>
+      <td><b>${t.index}</b></td>
+      <td>${esc(t.from)} → ${esc(t.to)}</td>
+      <td>${t.bound === "upper"
+        ? '<span class="tag upper">最紧上界</span>'
+        : '<span class="tag lower">最紧下界</span>'}</td>
+      <td class="num"><b>${t.value}</b></td>
+      <td>${sel
+        ? '<span class="tag tight">入选・取等</span>'
+        : '<span class="tag unb">未入选</span>'}</td>
+    </tr>`;
+  }).join("");
+
+  const eqItems = sc.equalities.length
+    ? sc.equalities.map((e) =>
+        `<li><b>${esc(e.to)} − ${esc(e.from)} = ${e.value}</b>
+         <small>（目标 ${e.index}・${e.bound === "upper" ? "最紧上界" : "最紧下界"}）</small></li>`
+      ).join("")
+    : "<li>无（任一目标取等都会与其余目标或原测量冲突，最大共现数为 0）</li>";
+
+  const comps = sc.components.map((comp, ci) => {
+    const byName = new Map(sc.coordinates.map((c) => [c.point, c.coordinate]));
+    const rows = comp.points.map((name) => {
+      const coord = byName.get(name);
+      const isZero = name === comp.zero;
+      return `<tr${isZero ? ' class="chosen"' : ""}>
+        <td>${esc(name)}${isZero ? ' <span class="tag anchor">零点</span>' : ""}</td>
+        <td class="num"><b>${coord}</b></td>
+      </tr>`;
+    }).join("");
+    return `<div class="extreme-comp">
+      <p class="tol-title">${sc.components.length > 1 ? `连通分量 ${ci + 1}：` : ""}零点 = ${esc(comp.zero)}
+        <small>（最早录入基准点）</small></p>
+      <table class="data-table">
+        <thead><tr><th>基准点</th><th>整数坐标 μm</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+  }).join("");
+
+  box.innerHTML = `
+    <div class="verdict-banner pass"><span class="icon">⌖</span>
+      <div>极值共现工况：${r.targetCount} 个目标中 <b>${sc.selectedCount}</b> 个可由同一组整数坐标同时达到
+      <span class="sub">入选目标 ${sc.selectedIndices.length ? "[" + sc.selectedIndices.join(", ") + "]" : "（空）"}；
+        未入选 ${sc.unselectedIndices.length ? "[" + sc.unselectedIndices.join(", ") + "]" : "（空）"}。
+        这是可共现目标数最多的子集；并列时已取输入序号列表字典序最小者。下列坐标满足全部原测量与入选等式，
+        每个原始连通分量以其最早录入基准点为零点（整体平移不改变任何有向间隙）。</span></div>
+    </div>
+    <p class="tol-title">各目标的最紧整数界与入选情况</p>
+    <div class="table-wrap extreme-result-table">
+      <table class="data-table">
+        <thead><tr><th>序号</th><th>有序点对</th><th>界别</th><th>最紧界 μm</th><th>工况</th></tr></thead>
+        <tbody>${targetRows}</tbody>
+      </table>
+    </div>
+    <p class="tol-title">入选等式（坐标须同时取等）</p>
+    <ul class="extreme-eq">${eqItems}</ul>
+    <p class="tol-title">一组满足原测量与入选等式的整数坐标</p>
+    ${comps}`;
+}
+
+function renderExtreme() {
+  renderExtremeTable();
+  renderExtremeResult();
+}
+
+function invalidateExtreme() {
+  state.extreme = null;
+  clearExtremeMessage();
+  renderExtremeResult();
+  persist();
+}
+
+function readExtremeForSubmit() {
+  const errors = [];
+  if (!state.extremeTargets.length) errors.push("请至少录入 1 个目标。");
+  if (state.extremeTargets.length > 10) errors.push("目标至多录入 10 个。");
+  const seen = new Set();
+  const targets = [];
+  state.extremeTargets.forEach((t, i) => {
+    const prefix = `目标 ${i + 1}`;
+    if (!t.from || !t.to) {
+      errors.push(`${prefix}：请选择起点与终点。`);
+      return;
+    }
+    if (t.from === t.to) {
+      errors.push(`${prefix}：起点与终点必须不同。`);
+      return;
+    }
+    if (t.bound !== "lower" && t.bound !== "upper") {
+      errors.push(`${prefix}：界别必须为最紧下界或最紧上界。`);
+      return;
+    }
+    const key = extremeDupKey(t);
+    if (seen.has(key)) {
+      const label = t.bound === "upper" ? "最紧上界" : "最紧下界";
+      errors.push(`${prefix}：与前序目标重复（${t.from} → ${t.to} 的${label}）。`);
+      return;
+    }
+    seen.add(key);
+    targets.push({ from: t.from, to: t.to, bound: t.bound });
+  });
+  return { errors, targets };
+}
+
+async function runExtreme() {
+  clearExtremeMessage();
+  if (state.points.length < 2) return showExtremeError("请先录入至少 2 个基准点。");
+  if (state.constraints.length < 1) return showExtremeError("请至少录入 1 条测量约束。");
+  const parsed = readExtremeForSubmit();
+  if (parsed.errors.length) return showExtremeError(parsed.errors);
+
+  const btn = $("extremeBtn");
+  btn.disabled = true;
+  btn.textContent = "计算中…";
+  const { ok, data } = await postJSON("/api/extreme-scenario", {
+    points: state.points,
+    constraints: state.constraints,
+    targets: parsed.targets
+  });
+  btn.disabled = false;
+  btn.textContent = "计算极值共现工况";
+  if (!ok) {
+    state.extreme = null;
+    renderExtremeResult();
+    return showExtremeError(data && data.detail ? data.detail : "极值共现工况请求失败。");
+  }
+  state.extreme = data;
+  if (data.consistent) state.analysis = { consistent: true, points: state.points };
+  else state.analysis = data;   // 矛盾：同步展示现有负环
+  renderResults();
+  renderExtremeResult();
+}
+
 /* ---------------- 示例 ---------------- */
 async function loadExample(key) {
   const ex = EXAMPLES[key];
@@ -2225,6 +2451,7 @@ async function loadExample(key) {
   state.inspection = null;
   state.attribution = null;
   state.reliability = null;
+  state.extreme = null;
   state.attrSelected = {};
   state.attrTarget = { targetFrom: "", targetTo: "" };
   state.relSelected = {};
@@ -2232,6 +2459,7 @@ async function loadExample(key) {
   state.relTarget = { targetFrom: "", targetTo: "", targetLow: "", targetHigh: "" };
   state.removable = {};
   if (ex.removable) for (const id of ex.removable) state.removable[id] = true;
+  state.extremeTargets = (ex.extremeTargets || []).map((t) => ({ ...t }));
   state.inspSelected = {};
   state.inspParams = {};
   if (ex.inspection) {
@@ -2276,6 +2504,7 @@ async function loadExample(key) {
   renderInspection();
   renderAttribution();
   renderReliability();
+  renderExtreme();
   clearSimplifyMessage();
   clearToleranceMessage();
   clearFitMessage();
@@ -2284,6 +2513,7 @@ async function loadExample(key) {
   clearInspMessage();
   clearAttrMessage();
   clearRelMessage();
+  clearExtremeMessage();
   resetConstraintForm();
   if (ex.query) {
     state.query = { ...ex.query };
@@ -2352,6 +2582,9 @@ async function loadExample(key) {
     $("rTargetTo").value = ex.reliability.targetTo;
     await runReliability();
   }
+  if (ex.autoExtreme && state.analysis && state.analysis.consistent) {
+    await runExtreme();
+  }
 }
 
 /* ---------------- 初始化 ---------------- */
@@ -2414,6 +2647,14 @@ function init() {
           }))
         }));
     }
+    if (Array.isArray(saved.extremeTargets)) {
+      const pset = new Set(state.points);
+      state.extremeTargets = saved.extremeTargets
+        .filter((t) => t && pset.has(t.from) && pset.has(t.to) && t.from !== t.to
+          && (t.bound === "lower" || t.bound === "upper"))
+        .slice(0, 10)
+        .map((t) => ({ from: t.from, to: t.to, bound: t.bound }));
+    }
   }
   syncSelects();
   if (state.query.targetLow !== undefined) {
@@ -2464,6 +2705,31 @@ function init() {
   $("inspBtn").addEventListener("click", runInspection);
   $("attrBtn").addEventListener("click", runAttribution);
   $("relBtn").addEventListener("click", runReliability);
+  $("addExtremeBtn").addEventListener("click", () => {
+    if (state.extremeTargets.length >= 10) return;
+    state.extremeTargets.push(defaultExtremeTarget());
+    invalidateExtreme();
+    renderExtremeTable();
+  });
+  $("extremeTbody").addEventListener("click", (e) => {
+    const del = e.target.closest("button[data-ext-del]");
+    if (!del) return;
+    state.extremeTargets.splice(Number(del.dataset.extDel), 1);
+    invalidateExtreme();
+    renderExtremeTable();
+  });
+  $("extremeTbody").addEventListener("change", (e) => {
+    const sel = e.target.closest("select[data-ext-field]");
+    if (!sel) return;
+    const i = Number(sel.dataset.ext);
+    const field = sel.dataset.extField;   // from | to | bound
+    if (!state.extremeTargets[i]) return;
+    state.extremeTargets[i][field] = sel.value;
+    // 目标录入变化后旧工况立即清除
+    invalidateExtreme();
+    renderExtremeTable();
+  });
+  $("extremeBtn").addEventListener("click", runExtreme);
   $("attrTbody").addEventListener("click", (e) => {
     const btn = e.target.closest("button[data-attr-toggle]");
     if (!btn) return;

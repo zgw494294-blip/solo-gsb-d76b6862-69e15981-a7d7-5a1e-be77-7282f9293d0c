@@ -12,7 +12,7 @@
     <span class="logo">⌖</span>
     <div>
       <h1>装配尺寸链校验台</h1>
-      <p class="subtitle">差分约束系统 · 负权闭环矛盾定位 · 最紧间隙界判定 · 容差预算 · 名义坐标拟合 · 补测读数窗口 · 垫片组合选配 · 尺寸链改动影响 · 矛盾测量最小撤回 · 测量复核排程 · 目标间隙精度归因 · 测量缺失合格概率（单位：μm）</p>
+      <p class="subtitle">差分约束系统 · 负权闭环矛盾定位 · 最紧间隙界判定 · 容差预算 · 名义坐标拟合 · 补测读数窗口 · 垫片组合选配 · 尺寸链改动影响 · 矛盾测量最小撤回 · 测量复核排程 · 目标间隙精度归因 · 测量缺失合格概率 · 极值共现工况（单位：μm）</p>
     </div>
   </div>
   <div class="examples">
@@ -33,6 +33,7 @@
       <option value="12">示例 12：测量复核排程（最小预期耗时）</option>
       <option value="13">示例 13：目标间隙精度归因（Shapley 分摊）</option>
       <option value="14">示例 14：测量缺失合格概率（缺测组合精确求和）</option>
+      <option value="15">示例 15：极值共现工况（最多目标同时取等）</option>
     </select>
   </div>
 </header>
@@ -362,6 +363,31 @@
       </div>
       <div class="message" id="relMessage" hidden></div>
       <div id="relResult" class="rel-result"></div>
+    </div>
+
+    <div class="card result-card">
+      <div class="card-head">
+        <h2>⑯ 极值共现工况</h2>
+        <span class="counter" id="extremeCounter">0 / 10 个目标</span>
+      </div>
+      <p class="hint">按顺序<b>录入 1～10 个目标</b>，每项为某<b>有序点对</b>选择该间隙的<b>最紧下界或最紧上界</b>（同一有序点对、同一界别不得重复；同点对分别选下界/上界、反向点对均可）。对完整清单先求出各目标的<b>最紧整数界</b>，再把“达到该界”作为<b>等式条件</b>，找出能由<b>同一组坐标同时达到</b>的目标数最多的子集；并列时取输入序号列表<b>字典序最小</b>者。返回各目标界值、入选/未入选目标与一组满足原测量和入选等式的<b>整数坐标</b>（每个原始连通分量以最早录入的基准点为零点）。原清单矛盾时只显示现有负环；目标界无界时报明目标序号、不生成工况。</p>
+      <div class="row shim-pos-actions">
+        <button class="btn primary" id="addExtremeBtn">＋ 添加目标</button>
+      </div>
+      <div class="table-wrap extreme-table-wrap">
+        <table class="data-table" id="extremeTable">
+          <thead>
+            <tr><th>序号</th><th>起点</th><th>终点</th><th>界别</th><th>操作</th></tr>
+          </thead>
+          <tbody id="extremeTbody"></tbody>
+        </table>
+      </div>
+      <p class="empty-hint" id="extremeEmpty">尚未录入目标（至少 1 个，至多 10 个）</p>
+      <div class="row">
+        <button class="btn primary" id="extremeBtn">计算极值共现工况</button>
+      </div>
+      <div class="message" id="extremeMessage" hidden></div>
+      <div id="extremeResult" class="extreme-result"></div>
     </div>
   </section>
 </main>

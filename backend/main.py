@@ -45,6 +45,15 @@
                           界，目标有界且整个区间落入合格区间才计通过；组合概率
                           精确求和，以既约分数返回通过/未通过概率；不为每种组合
                           重跑全点最短路）
+  POST /api/extreme-scenario 极值共现工况（沿用现有点和测量校验；按顺序录入
+                          1～10 个目标，每项为某有序点对选择最紧下界或最紧上界，
+                          同一点对、同一界别不得重复；原清单矛盾时只返回负环；
+                          目标界无界时报明目标序号、不生成工况；对完整清单求各
+                          目标最紧整数界，把达到该界作为等式条件，找可由同一组
+                          坐标同时达到的目标数最多的子集，并列取输入序号列表
+                          字典序最小者，返回各目标界值、入选/未入选目标与满足
+                          原测量和入选等式的一组整数坐标——每个原始连通分量
+                          以最早录入基准点为零点）
 静态：GET /         前端页面（static/index.html）
 """
 
@@ -742,6 +751,39 @@ async def qualification_reliability(request: Request):
         points, constraints,
         model.target_from.strip(), model.target_to.strip(),
         model.target_low, model.target_high, items)
+
+
+@app.post("/api/extreme-scenario")
+async def extreme_scenario(request: Request):
+    try:
+        raw = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"detail": ["请求体不是合法的 JSON"]})
+    if not isinstance(raw, dict):
+        return JSONResponse(status_code=400, content={"detail": ["请求体必须是 JSON 对象"]})
+    try:
+        points, constraints = _prepare(raw)
+        targets = solver.validate_extreme_targets(points, raw.get("targets"))
+    except ValidationError as exc:
+        return JSONResponse(status_code=400,
+                            content={"detail": _validation_messages(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": list(exc.args[0])})
+
+    edges = solver.build_edges(points, constraints)
+    cycle = solver.find_negative_cycle(len(points), edges)
+    if cycle is not None:
+        # 原清单矛盾：只显示现有负环，不生成极值共现工况
+        return {
+            "consistent": False,
+            "points": points,
+            "contradiction": solver.contradiction_payload(points, edges, cycle),
+        }
+    try:
+        return solver.extreme_scenario(points, constraints, targets)
+    except ValueError as exc:
+        # 目标界无界：报明目标序号，不生成工况
+        return JSONResponse(status_code=400, content={"detail": list(exc.args[0])})
 
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"

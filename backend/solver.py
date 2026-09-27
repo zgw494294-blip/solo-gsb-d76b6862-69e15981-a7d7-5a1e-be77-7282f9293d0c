@@ -47,6 +47,15 @@
   为各条 p_i 或 (1000−p_i) 之积（公分母 1000^n），通过/未通过权重和以既约
   分数返回。各子图最短路在终端图上沿子集递归树增量更新，不为每种组合重跑
   全点最短路；完整清单矛盾时只返回负环。
+- 极值共现工况：按顺序录入 1～10 个目标，每项为某有序点对选择其最紧下界或
+  最紧上界（同一有序点对、同一界别不得重复）。完整清单一致时先由 Floyd
+  全源最短路求各目标的最紧整数界，目标界无界（点对不连通）时报明目标序号、
+  不生成工况。把“达到该界”视作等式 x_v−x_u = b，即向原图加入两条等权边
+  u→v（b）与 v→u（−b）；一组目标可共现当且仅当加入这些等式边后无负环。
+  可共现性对子集向下封闭，按目标数从大到小、同数按输入序号向量字典序首个
+  可行的组合即所求（至多 2^10−1 次负环判定）。再在原图加入入选等式边后的
+  图上取一组可行整数势，每个原始连通分量（按测量的无向连接）以最早录入的
+  基准点为零点整体平移，即得满足原测量与全部入选等式的整数坐标。
 所有运算均为整数或精确分数，无浮点误差。
 """
 
@@ -54,6 +63,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from fractions import Fraction
+from itertools import combinations
 
 MAX_POINTS = 30
 MIN_POINTS = 2
@@ -2032,3 +2042,222 @@ def qualification_reliability(points: list[str], constraints: list[dict],
         "failProbability": _fraction_payload(fail_fr),
     })
     return base
+
+
+# ============================ 极值共现工况 ============================
+
+MIN_EXTREME_TARGETS = 1
+MAX_EXTREME_TARGETS = 10
+
+
+def validate_extreme_targets(points: list[str], raw_targets) -> list[dict]:
+    """校验极值共现工况的目标列表，返回规范化列表；失败抛 ValueError(消息列表)。
+
+    目标数量须为 1～10；每项为 {from, to, bound}：from/to 为两个不同的已录入
+    点，bound ∈ {"lower", "upper"}（选择该有序间隙的最紧下界或最紧上界）。
+    同一有序点对（from, to）与同一界别的组合不得在两项间重复；同一点对分别
+    选取下界与上界、或反向点对的同一界别均不算重复。
+    """
+    if not isinstance(raw_targets, list):
+        raise ValueError(["targets 必须为数组：每项为 {from, to, bound} 对象"])
+    if not (MIN_EXTREME_TARGETS <= len(raw_targets) <= MAX_EXTREME_TARGETS):
+        raise ValueError([f"极值目标须录入 {MIN_EXTREME_TARGETS}～"
+                          f"{MAX_EXTREME_TARGETS} 个（当前 {len(raw_targets)} 个）"])
+
+    errors: list[str] = []
+    targets: list[dict] = []
+    seen: set[tuple[str, str, str]] = set()
+    for k, raw in enumerate(raw_targets):
+        prefix = f"目标 {k + 1}"
+        if not isinstance(raw, dict):
+            errors.append(f"{prefix}：格式不是对象")
+            continue
+        p_from = raw.get("from") if isinstance(raw.get("from"), str) else None
+        p_to = raw.get("to") if isinstance(raw.get("to"), str) else None
+        p_from = p_from.strip() if p_from else ""
+        p_to = p_to.strip() if p_to else ""
+        bound = raw.get("bound")
+        if not p_from:
+            errors.append(f"{prefix}：起点为空")
+        elif p_from not in points:
+            errors.append(f"{prefix}：起点 {p_from} 尚未录入")
+        if not p_to:
+            errors.append(f"{prefix}：终点为空")
+        elif p_to not in points:
+            errors.append(f"{prefix}：终点 {p_to} 尚未录入")
+        if p_from and p_to and p_from == p_to:
+            errors.append(f"{prefix}：起点与终点必须不同")
+        if bound not in ("lower", "upper"):
+            errors.append(f"{prefix}：界别必须为 lower（最紧下界）或 upper（最紧上界）")
+            bound = None
+        if p_from and p_to and bound and (p_from, p_to, bound) in seen:
+            label = "最紧下界" if bound == "lower" else "最紧上界"
+            errors.append(f"{prefix}：与前序目标重复（{p_from} → {p_to} 的{label}）")
+        elif p_from and p_to and bound:
+            seen.add((p_from, p_to, bound))
+        targets.append({"from": p_from, "to": p_to, "bound": bound})
+    if errors:
+        raise ValueError(errors)
+    return targets
+
+
+def _undirected_components(points: list[str], constraints: list[dict]) -> list[list[int]]:
+    """按测量（忽略方向）求基准点的无向连通分量；返回按下标升序的分量列表，
+    每个分量内按下标升序排列，首元素即该分量最早录入的基准点（零点）。
+    """
+    n = len(points)
+    parent = list(range(n))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    idx = {name: i for i, name in enumerate(points)}
+    for c in constraints:
+        ra, rb = find(idx[c["from"]]), find(idx[c["to"]])
+        if ra != rb:
+            parent[rb] = ra
+    groups: dict[int, list[int]] = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(i)
+    comps = [sorted(members) for members in groups.values()]
+    comps.sort(key=lambda members: members[0])
+    return comps
+
+
+def extreme_scenario(points: list[str], constraints: list[dict],
+                     targets: list[dict]) -> dict:
+    """极值共现工况（仅在原清单一致时调用；矛盾检测由调用方先行完成）。
+
+    步骤：
+      1. Floyd 全源最短路求每个目标的最紧整数界：
+         lower: 最紧下界 L = −dist[v][u]；upper: 最紧上界 U = dist[u][v]。
+         任一侧不可达（点对在约束图中不连通）即该目标界无界，报明目标序号、
+         不生成工况（ValueError，由路由转为 400）。
+      2. “达到界 b”视作等式 x_v−x_u = b，加入两条等权边 u→v（b）与
+         v→u（−b）。一个子集可共现 ⇔ 原图加入其全部等式边后无负环
+         （加入等式边不会改变最短路可达关系，故等式恰在界处成立）。
+      3. 可共现性对子集向下封闭；按目标数从大到小、同数按输入序号向量
+         字典序（即 combinations 的生成顺序）枚举首个可行子集，即
+         “可共现目标数最多、并列序号列表字典序最小”的入选集。
+      4. 在原图＋入选等式边上取一组可行整数势（虚拟超源 Bellman-Ford）；
+         按测量的无向连通分量把每个分量整体平移，使最早录入基准点为零，
+         得满足原测量与全部入选等式的整数坐标。
+    """
+    n = len(points)
+    idx = {name: i for i, name in enumerate(points)}
+    k = len(targets)
+    base_edges = build_edges(points, constraints)
+    dist = all_pairs_shortest(n, base_edges)
+
+    target_infos: list[dict] = []
+    unbounded: list[str] = []
+    for t, tg in enumerate(targets):
+        u, v = idx[tg["from"]], idx[tg["to"]]
+        info: dict = {"index": t + 1, "from": tg["from"], "to": tg["to"],
+                      "bound": tg["bound"]}
+        if tg["bound"] == "upper":
+            d = dist[u][v]
+            if d is None:
+                unbounded.append(f"目标 {t + 1}（{tg['from']} → {tg['to']}，最紧上界）"
+                                 "的间隙界无界（两点在约束图中不连通）")
+            else:
+                info["value"] = d
+        else:
+            d = dist[v][u]
+            if d is None:
+                unbounded.append(f"目标 {t + 1}（{tg['from']} → {tg['to']}，最紧下界）"
+                                 "的间隙界无界（两点在约束图中不连通）")
+            else:
+                info["value"] = -d
+        target_infos.append(info)
+    if unbounded:
+        raise ValueError(unbounded + ["存在无界目标，无法定义极值等式，不生成工况；"
+                                      "请调整测量使目标点对连通或修改目标。"])
+
+    # 每个目标的等式边：x_v − x_u = value 即 u→v 权 value、v→u 权 −value
+    eq_edge_pairs = [
+        (Edge(idx[tg["from"]], idx[tg["to"]], info["value"], f"目标{info['index']}", True),
+         Edge(idx[tg["to"]], idx[tg["from"]], -info["value"], f"目标{info['index']}", False))
+        for tg, info in zip(targets, target_infos)
+    ]
+
+    # 由大到小枚举：r 个目标的组合按 combinations 顺序恰为序号向量字典序
+    chosen: tuple[int, ...] = ()
+    for r in range(k, 0, -1):
+        found: tuple[int, ...] | None = None
+        for combo in combinations(range(k), r):
+            edges = list(base_edges)
+            for t in combo:
+                edges.extend(eq_edge_pairs[t])
+            if find_negative_cycle(n, edges) is None:
+                found = combo
+                break
+        if found is not None:
+            chosen = found
+            break
+
+    chosen_set = set(chosen)
+    selected_indices = [t + 1 for t in chosen]
+    unselected_indices = [t + 1 for t in range(k) if t not in chosen_set]
+
+    # 原图 + 入选等式边（已验证无负环）上取可行整数势
+    feasible_edges = list(base_edges)
+    for t in chosen:
+        feasible_edges.extend(eq_edge_pairs[t])
+    pot = _feasible_potential(n, feasible_edges)
+
+    # 每个原始（测量的无向）连通分量以最早录入基准点为零点整体平移
+    components = _undirected_components(points, constraints)
+    coordinates = [0] * n
+    for members in components:
+        root = members[0]
+        for i in members:
+            coordinates[i] = pot[i] - pot[root]
+
+    # 校验不变式：满足全部原测量
+    for c in constraints:
+        u, v = idx[c["from"]], idx[c["to"]]
+        gap = coordinates[v] - coordinates[u]
+        if not (c["low"] <= gap <= c["high"]):
+            raise RuntimeError("极值工况坐标不变式被破坏：违反原测量")
+    for t in chosen:
+        info = target_infos[t]
+        u, v = idx[info["from"]], idx[info["to"]]
+        if coordinates[v] - coordinates[u] != info["value"]:
+            raise RuntimeError("极值工况坐标不变式被破坏：入选目标未取等")
+
+    return {
+        "consistent": True,
+        "points": points,
+        "targetCount": k,
+        "targets": [
+            {"index": info["index"], "from": info["from"], "to": info["to"],
+             "bound": info["bound"], "boundLabel":
+                 "最紧下界" if info["bound"] == "lower" else "最紧上界",
+             "value": info["value"],
+             "selected": (info["index"] - 1) in chosen_set}
+            for info in target_infos
+        ],
+        "scenario": {
+            "selectedIndices": selected_indices,
+            "unselectedIndices": unselected_indices,
+            "selectedCount": len(chosen),
+            "equalities": [
+                {"index": info["index"], "from": info["from"], "to": info["to"],
+                 "bound": info["bound"], "value": info["value"]}
+                for info in target_infos if (info["index"] - 1) in chosen_set
+            ],
+            "coordinates": [
+                {"point": p, "coordinate": coordinates[i]}
+                for i, p in enumerate(points)
+            ],
+            "components": [
+                {"zero": points[members[0]],
+                 "points": [points[i] for i in members]}
+                for members in components
+            ],
+        },
+    }

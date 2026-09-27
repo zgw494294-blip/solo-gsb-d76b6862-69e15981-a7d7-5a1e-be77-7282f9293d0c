@@ -526,6 +526,26 @@ body {
 .rel-pct.fail { color: var(--fail); }
 .rel-pct.pass { color: var(--pass); }
 
+/* 极值共现工况 */
+.extreme-result { margin-top: 14px; }
+.extreme-table-wrap { max-height: 260px; }
+.extreme-select { padding: 4px 8px; min-width: 90px; }
+.extreme-select.bad { border-color: var(--fail); background: var(--fail-bg); }
+.extreme-result-table { max-height: 300px; }
+.extreme-result tr.chosen { background: var(--pass-bg); }
+.extreme-eq {
+  margin: 8px 0 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.extreme-eq small { color: var(--ink-soft); font-weight: 400; }
+.extreme-comp { margin-top: 10px; }
+.extreme-comp .tol-title { margin-top: 10px; }
+.extreme-comp table { max-width: 420px; }
+.extreme-comp tr.chosen td { background: var(--pass-bg); }
+
 @media (max-width: 960px) {
   .layout { grid-template-columns: 1fr; }
 }
